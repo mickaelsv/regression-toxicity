@@ -1,0 +1,302 @@
+---
+title: "test"
+author: "Luc YAO"
+date: "2023-12-09"
+output: html_document
+---
+
+```{r}
+rm(list=ls())
+graphics.off()
+set.seed(123)
+```
+
+# Partie 1
+
+```{r}
+# READING THE DATA
+library(dplyr)
+
+data = read.csv("data.csv")
+head(data)
+n <- dim(data)[1]
+p <- dim(data)[2]
+covariable_data <- data[,-p]
+```
+
+```{r}
+library(glmnet)
+
+X <- as.matrix(covariable_data)
+Y <- as.numeric(data$Class == "Toxic")
+
+mod.L <- glmnet(X,Y,alpha = 1, family = "binomial")
+mod.L$lambda |> head()
+plot(mod.L,label=TRUE)
+plot(mod.L,xvar="lambda",label=TRUE)
+
+lassoCV <- cv.glmnet(X,Y,alpha=1, family = "binomial")
+plot(lassoCV)
+```
+
+```{r}
+# DATA CLEANING 
+delete_variables <- c()
+median_covariable <- apply(abs(covariable_data), 2, function(x) {quantile(x,0.70)})
+for (i in 1:length(median_covariable)) {
+  if(median_covariable[i] == 0) {
+    delete_variables <- append(delete_variables, i)
+  }
+}
+
+update_data <- covariable_data[,-delete_variables]
+
+# DIVINDING OUR DATA SET 
+update_data = cbind(Y,update_data)
+# Split the data into training and testing sets
+train_indices <- sample(1:nrow(update_data), 0.8 * nrow(update_data))
+train_data <- update_data[train_indices, ]
+test_data <- update_data[-train_indices, ]
+```
+
+
+
+
+```{r}
+# 1er METHOD -- CROSS-VALIDATION METHOD
+
+library(glmnet)
+
+train_data_covariables = train_data[,-1]
+
+X <- as.matrix(train_data_covariables)
+Y <- as.numeric((data$Class == "Toxic")[train_indices])
+Y_test = as.numeric((data$Class == "Toxic")[-train_indices])
+
+mod.L <- glmnet(X,Y,alpha = 1, family = "binomial")
+mod.L$lambda |> head()
+plot(mod.L,label=TRUE)
+plot(mod.L,xvar="lambda",label=TRUE)
+
+lassoCV <- cv.glmnet(X,Y,alpha=1, family = "binomial")
+plot(lassoCV)
+```
+
+```{r}
+# Fit the Lasso logistic regression model with cross-validation
+cvlasso_model <- cv.glmnet(X, Y, alpha = 1, family = "binomial")
+
+# Display the optimal lambda value selected by cross-validation
+best_lambda <- cvlasso_model$lambda.min
+cat("Optimal lambda:", best_lambda, "\n")
+
+indice_lambda = 0
+i = 1
+nb_selected = 25
+while (indice_lambda == 0) {
+  if (cvlasso_model$nzero[i] >= nb_selected) {
+    indice_lambda = i
+  }
+  i = i + 1
+}
+
+lasso_mod_variables <- as.matrix(cvlasso_model$glmnet.fit$beta)[,indice_lambda]
+
+non_null_variables <- names(lasso_mod_variables)[lasso_mod_variables != 0]
+non_null_values <- lasso_mod_variables[non_null_variables]
+```
+
+```{r}
+df_best_model <- data.frame(Y = Y, train_data_covariables[non_null_variables])
+best_lasso_model <- glm(formula = Y ~ ., data = df_best_model, family = "binomial")
+summary(best_lasso_model)
+```
+
+```{r}
+res0<-glm(Y~1,data = df_best_model,family=binomial)
+resfor<-step(res0,list(upper=best_lasso_model),direction='forward')
+```
+
+```{r}
+set.seed(123)
+# Fit a logistic regression model
+forward_model <- glm(Y ~ SpMin3_Bhi + MATS2s + AATSC6s + khs.aaN + AATSC5m + nT9Ring + 
+    VR1_Dt + AATSC2e + SpMax4_Bhm + ATSC7p + minssNH, data = df_best_model, family = "binomial")
+# Make predictions on the test set
+predictions <- predict.glm(forward_model, newdata = test_data, type = "response")
+
+# Convert probabilities to binary predictions (0 or 1)
+predicted_classes <- ifelse(predictions >= 0.5, 1, 0)
+# Evaluate the model
+accuracy <- sum(predicted_classes == test_data$Y) / length(test_data$Y)
+confusion_matrix <- table(Actual = test_data$Y, Predicted = predicted_classes)
+# Print the results
+cat("Accuracy:", accuracy, "\n\n")
+print(confusion_matrix)
+cat("\n AIC:", forward_model$aic, "\n")
+
+cat("\n residuals:", sum(abs(forward_model$residuals)), "\n")
+
+
+```
+
+
+```{r}
+train_data = cbind(Y, train_data_covariables[non_null_variables])
+test_data = cbind(Y_test, test_data[non_null_variables])
+```
+
+
+```{r}
+# Fit a logistic regression model
+logistic_model <- glm(Y ~ ., data = train_data, family = "binomial")
+# Make predictions on the test set
+predictions <- predict.glm(logistic_model, newdata = test_data, type = "response")
+
+# Convert probabilities to binary predictions (0 or 1)
+predicted_classes <- ifelse(predictions >= 0.5, 1, 0)
+# Evaluate the model
+accuracy <- sum(predicted_classes == test_data$Y) / length(test_data$Y)
+confusion_matrix <- table(Actual = test_data$Y, Predicted = predicted_classes)
+# Print the results
+cat("Accuracy:", accuracy, "\n")
+print(confusion_matrix)
+```
+
+```{r}
+# Fonction threshold 
+threshold_fct <- function(x, p) {
+  accuracy <- rep(NA, length(p))
+  for (i in 1:length(p)) {
+    t <- ifelse(x > p[i], 1, 0)
+    accuracy[i] <- sum(t == test_data["Y_test"]) / dim(test_data["Y_test"])[1]
+  }
+  return(accuracy)
+}
+
+plot(seq(0, 1, by = 0.001), threshold_fct(predictions, seq(0, 1, by = 0.001)), type = "l", xlab = "threshold values", ylab = "accuracy", main = "MAP criteria")
+```
+
+```{r}
+# Linear xi ?
+
+n = length(predictions)
+log_eta <- rep(NA, n)
+
+for (j in 2:(dim(test_data)[2])) {
+  x1 <- rep(NA, n)
+  for (k in 1:n) {
+    log_eta[k] <- log(predictions[k] / (1 - predictions[k]))
+    x1[k] = test_data[,j][k]
+  }
+  plot(x1, log_eta)
+}
+```
+
+## Méthode qui pénalise le nombre minimum de variables prises dans le modèle 
+
+```{r}
+# fonction seuil variables
+modele_seuil_variable <- function(nb, train_data, test_data) {
+  train_data_covariables = train_data[,-1]
+  
+  X <- as.matrix(train_data_covariables)
+  Y <- as.numeric((data$Class == "Toxic")[train_indices])
+  Y_test = as.numeric((data$Class == "Toxic")[-train_indices])
+  
+  # Fit the Lasso logistic regression model with cross-validation
+  cvlasso_model <- cv.glmnet(X, Y, alpha = 1, family = "binomial")
+  
+  indice_lambda = 0
+  i = 1
+  nb_selected = nb
+  while (indice_lambda == 0) {
+    if (cvlasso_model$nzero[i] >= nb_selected) {
+      indice_lambda = i
+    }
+    i = i + 1
+  }
+  
+  # coefficients of the lasso model with indice_lambda
+  lasso_mod_variables <- as.matrix(cvlasso_model$glmnet.fit$beta)[,indice_lambda] 
+  
+  non_null_variables <- names(lasso_mod_variables)[lasso_mod_variables != 0]
+  non_null_values <- lasso_mod_variables[non_null_variables]
+  
+  train_data = cbind(Y, train_data_covariables[non_null_variables])
+  test_data = cbind(Y_test, test_data[non_null_variables])
+  
+  # Fit a logistic regression model
+  logistic_model <- glm(Y ~ ., data = train_data, family = "binomial")
+  # Make predictions on the test set
+  predictions <- predict.glm(logistic_model, newdata = test_data, type = "response")
+  
+  # Convert probabilities to binary predictions (0 or 1)
+  predicted_classes <- ifelse(predictions >= 0.5, 1, 0)
+  # Evaluate the model
+  accuracy <- sum(predicted_classes == test_data$Y) / length(test_data$Y)
+  confusion_matrix <- table(Actual = test_data$Y, Predicted = predicted_classes)
+  # Print the results
+  
+  output = list(accuracy = accuracy, aic = logistic_model$aic, confusion_matrix = confusion_matrix, residuals = sum(logistic_model$residuals))
+  
+  return(output)
+}
+```
+
+```{r}
+set.seed(314159265)
+# Split the data into training and testing sets
+train_indices <- sample(1:nrow(update_data), 0.8 * nrow(update_data))
+train_data <- update_data[train_indices, ]
+test_data <- update_data[-train_indices, ]
+
+max_iter = 20
+res_accuracy = rep(NA, max_iter-1)
+res_aic = rep(NA, max_iter-1)
+res_residuals = rep(NA, max_iter-1)
+
+for(k in 2:max_iter) {
+  res = modele_seuil_variable(k, train_data, test_data)
+  res_accuracy[k-1] = res$accuracy
+  res_aic[k-1] = res$aic
+  res_residuals[k-1] = res$residuals
+}
+```
+
+
+```{r}
+plot(seq(2,max_iter), res_accuracy, type = "l", ylab = "accuracy", xlab = "number of variables selected for the logistic regression model", main = "Performance of the models")
+plot(seq(2,max_iter), res_aic, type = "l", ylab = "AIC", xlab = "number of variables selected for the logistic regression model", main = "Performance of the models")
+plot(seq(2,max_iter), abs(res_residuals), type = "l", ylab = "residuals", xlab = "number of variables selected for the logistic regression model", main = "Performance of the models")
+
+```
+
+```{r}
+cat("Best accuracy : ", max(res_accuracy), "\n")
+cat("Number of parameters associated : ", which.max(res_accuracy)+1, "\n\n")
+
+cat("Best AIC : ", min(res_aic), "\n")
+cat("Number of parameters associated : ", which.min(res_aic)+1, "\n\n")
+
+cat("Best residuals : ", min(abs(res_residuals)), "\n")
+cat("Number of parameters associated : ", which.min(abs(res_residuals)) + 1, "\n\n")
+```
+
+```{r}
+cat("Modèle minimisant AIC \n")
+cat("residuals : ", abs(res_residuals[7]), "\n")
+cat("AIC : ", res_aic[7], "\n")
+cat("accuracy : ", res_accuracy[7], "\n\n")
+
+cat("Modèle minimisant residuals \n")
+cat("residuals : ", abs(res_residuals[12]), "\n")
+cat("AIC : ", res_aic[12], "\n")
+cat("accuracy : ", res_accuracy[12], "\n\n")
+
+cat("Modèle maximisant accuracy \n")
+cat("residuals : ", abs(res_residuals[8]), "\n")
+cat("AIC : ", res_aic[8], "\n")
+cat("accuracy : ", res_accuracy[8], "\n")
+```
+
